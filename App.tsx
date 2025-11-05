@@ -1,14 +1,16 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { transcribeAudio, translateText, textToSpeech, getPhoneticTranscription } from './services/geminiService';
-import { SUPPORTED_LANGUAGES, DEFAULT_TARGET_LANGUAGE } from './constants';
-import { decode, decodeAudioData } from './utils';
-import { MicrophoneIcon, StopIcon, SpeakerIcon, CopyIcon, ClearIcon } from './components/icons';
+import { SUPPORTED_LANGUAGES, SUPPORTED_VOICES, DEFAULT_TARGET_LANGUAGE, DEFAULT_SOURCE_LANGUAGE, DEFAULT_VOICE } from './constants';
+import { decode, pcmToWavBlob, pcmToMp3Blob } from './utils';
+import { MicrophoneIcon, StopIcon, SpeakerIcon, CopyIcon, ClearIcon, DownloadIcon } from './components/icons';
 
 const App: React.FC = () => {
     const [inputText, setInputText] = useState('');
     const [outputText, setOutputText] = useState('');
     const [phoneticText, setPhoneticText] = useState('');
+    const [sourceLanguage, setSourceLanguage] = useState(DEFAULT_SOURCE_LANGUAGE);
     const [targetLanguage, setTargetLanguage] = useState(DEFAULT_TARGET_LANGUAGE);
+    const [selectedVoice, setSelectedVoice] = useState(DEFAULT_VOICE);
     const [outputAudio, setOutputAudio] = useState<string | null>(null);
     
     const [isLoading, setIsLoading] = useState(false);
@@ -16,15 +18,50 @@ const App: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [isRecording, setIsRecording] = useState(false);
     const [isCopied, setIsCopied] = useState(false);
+    const [playbackRate, setPlaybackRate] = useState(1.0);
+    const [isPlayingAudio, setIsPlayingAudio] = useState(false);
 
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
-    const audioContextRef = useRef<AudioContext | null>(null);
     const audioVisualizerRef = useRef<AnalyserNode | null>(null);
     const visualizerAnimationRef = useRef<number | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const audioElementRef = useRef<HTMLAudioElement | null>(null);
+    const currentAudioUrlRef = useRef<string | null>(null);
+    
+    useEffect(() => {
+        if (audioElementRef.current) {
+            audioElementRef.current.playbackRate = playbackRate;
+        }
+    }, [playbackRate]);
 
-    const handleTranslate = useCallback(async (textToTranslate: string, language: string) => {
+    useEffect(() => {
+        const audio = audioElementRef.current;
+        return () => {
+            if (audio) {
+                audio.pause();
+                audio.src = '';
+            }
+            if (currentAudioUrlRef.current) {
+                URL.revokeObjectURL(currentAudioUrlRef.current);
+            }
+        };
+    }, []);
+
+    const handleGenerateAudio = useCallback(async (text: string, language: string, voice: string) => {
+        setLoadingMessage('Generating audio...');
+        setOutputAudio(null);
+        try {
+            const audio = await textToSpeech(text, language, voice);
+            setOutputAudio(audio);
+        } catch (err) {
+            setError(err instanceof Error ? `Audio generation failed: ${err.message}` : String(err));
+        } finally {
+            setLoadingMessage('');
+        }
+    }, []);
+
+    const handleTranslate = useCallback(async (textToTranslate: string, fromLanguage: string, toLanguage: string, voice: string) => {
         if (!textToTranslate.trim()) {
             setOutputText('');
             setOutputAudio(null);
@@ -40,42 +77,48 @@ const App: React.FC = () => {
 
         try {
             setLoadingMessage('Translating...');
-            const translated = await translateText(textToTranslate, language);
+            const translated = await translateText(textToTranslate, fromLanguage, toLanguage);
             setOutputText(translated);
 
             setLoadingMessage('Generating pronunciation...');
-            const phonetic = await getPhoneticTranscription(translated, language);
+            const phonetic = await getPhoneticTranscription(translated, toLanguage);
             setPhoneticText(phonetic);
 
-            setLoadingMessage('Generating audio...');
-            const audio = await textToSpeech(translated);
-            setOutputAudio(audio);
+            await handleGenerateAudio(translated, toLanguage, voice);
+
         } catch (err) {
             setError(err instanceof Error ? `Translation failed: ${err.message}` : String(err));
         } finally {
             setIsLoading(false);
             setLoadingMessage('');
         }
-    }, []);
+    }, [handleGenerateAudio]);
     
-    // Automatic translation on text input change with debounce
     useEffect(() => {
         if (isRecording) return;
         
         const handler = setTimeout(() => {
             if (inputText.trim()) {
-                handleTranslate(inputText, targetLanguage);
+                handleTranslate(inputText, sourceLanguage, targetLanguage, selectedVoice);
             } else {
                  setOutputText('');
                  setOutputAudio(null);
                  setPhoneticText('');
             }
-        }, 1000); // 1 second debounce
+        }, 1000);
 
         return () => {
             clearTimeout(handler);
         };
-    }, [inputText, targetLanguage, handleTranslate, isRecording]);
+    }, [inputText, sourceLanguage, targetLanguage, selectedVoice, handleTranslate, isRecording]);
+
+    // Re-generate audio if the voice is changed
+    useEffect(() => {
+        if (outputText && outputAudio) {
+            handleGenerateAudio(outputText, targetLanguage, selectedVoice);
+        }
+    }, [selectedVoice, targetLanguage, outputText, handleGenerateAudio]);
+
 
     const drawVisualizer = useCallback(() => {
         if (!audioVisualizerRef.current || !canvasRef.current) return;
@@ -125,7 +168,6 @@ const App: React.FC = () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             
-            // Setup audio context for visualizer
             const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
             const source = audioContext.createMediaStreamSource(stream);
             const analyser = audioContext.createAnalyser();
@@ -135,7 +177,7 @@ const App: React.FC = () => {
 
             setIsRecording(true);
             setError(null);
-            setInputText(''); // Clear text when starting new recording
+            setInputText('');
 
             drawVisualizer();
 
@@ -148,7 +190,7 @@ const App: React.FC = () => {
             };
 
             mediaRecorder.onstop = async () => {
-                stream.getTracks().forEach(track => track.stop()); // Stop microphone access
+                stream.getTracks().forEach(track => track.stop());
                 if (visualizerAnimationRef.current) cancelAnimationFrame(visualizerAnimationRef.current);
                 audioVisualizerRef.current = null;
                 audioContext.close();
@@ -159,9 +201,8 @@ const App: React.FC = () => {
                 setLoadingMessage('Transcribing...');
                 setIsLoading(true);
                 try {
-                    const transcribedText = await transcribeAudio(audioBlob);
+                    const transcribedText = await transcribeAudio(audioBlob, sourceLanguage);
                     setInputText(transcribedText);
-                    // Translation will be triggered by the useEffect watching inputText
                 } catch (err) {
                     setError(err instanceof Error ? `Transcription failed: ${err.message}` : String(err));
                     setOutputText('');
@@ -187,22 +228,67 @@ const App: React.FC = () => {
     };
 
     const handlePlayAudio = async () => {
-        if (!outputAudio) return;
+        if (!outputAudio || isPlayingAudio) return;
         try {
-            if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-                const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-                audioContextRef.current = new AudioContext({ sampleRate: 24000 });
-            }
-            const audioContext = audioContextRef.current;
+            setIsPlayingAudio(true);
+    
             const audioData = decode(outputAudio);
-            const audioBuffer = await decodeAudioData(audioData, audioContext, 24000, 1);
+            const wavBlob = pcmToWavBlob(audioData, 24000, 1, 16);
+    
+            if (currentAudioUrlRef.current) {
+                URL.revokeObjectURL(currentAudioUrlRef.current);
+            }
+    
+            const audioUrl = URL.createObjectURL(wavBlob);
+            currentAudioUrlRef.current = audioUrl;
+    
+            if (!audioElementRef.current) {
+                audioElementRef.current = new Audio();
+            }
+            const audio = audioElementRef.current;
             
-            const source = audioContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(audioContext.destination);
-            source.start();
+            audio.src = audioUrl;
+            audio.preservesPitch = true;
+            audio.playbackRate = playbackRate;
+    
+            audio.onended = () => {
+                setIsPlayingAudio(false);
+            };
+            audio.onerror = (e) => {
+                setError('An error occurred during audio playback.');
+                console.error('Audio playback error:', e);
+                setIsPlayingAudio(false);
+            };
+    
+            await audio.play();
+    
         } catch (err) {
             setError(err instanceof Error ? `Failed to play audio: ${err.message}` : String(err));
+            setIsPlayingAudio(false);
+        }
+    };
+
+    const handleDownloadAudio = () => {
+        if (!outputAudio) return;
+        try {
+            const audioData = decode(outputAudio);
+            const mp3Blob = pcmToMp3Blob(audioData, 24000, 1);
+            
+            const url = URL.createObjectURL(mp3Blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            
+            const safeTargetLanguage = targetLanguage.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+            a.download = `translation_${safeTargetLanguage}.mp3`;
+            
+            document.body.appendChild(a);
+            a.click();
+            
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        } catch (err) {
+            setError(err instanceof Error ? `Failed to prepare audio for download: ${err.message}` : String(err));
         }
     };
 
@@ -225,10 +311,10 @@ const App: React.FC = () => {
         <div className="min-h-screen text-gray-800 dark:text-gray-200 bg-gray-100 dark:bg-gray-900 flex flex-col p-4 sm:p-6 lg:p-8">
             <header className="text-center mb-8">
                 <h1 className="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-500 to-teal-400">
-                    Bangla Language Bridge
+                    Global Language Bridge
                 </h1>
                 <p className="mt-2 text-lg text-gray-600 dark:text-gray-400">
-                    Speak or type in Bengali for instant, effortless translations.
+                    Speak or type in any language for instant, effortless translations.
                 </p>
             </header>
 
@@ -243,8 +329,21 @@ const App: React.FC = () => {
                 <div className="flex-grow grid grid-cols-1 md:grid-cols-2 gap-8">
                     {/* Input Card */}
                     <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg flex flex-col">
-                        <div className="p-4 sm:p-6 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-                             <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Bengali Input</h2>
+                        <div className="p-4 sm:p-6 border-b border-gray-200 dark:border-gray-700 flex flex-wrap justify-between items-center gap-4">
+                             <div className="flex items-center gap-2">
+                                <label htmlFor="source-language-select" className="text-sm font-medium text-gray-700 dark:text-gray-300 shrink-0">Language:</label>
+                                <select
+                                    id="source-language-select"
+                                    value={sourceLanguage}
+                                    onChange={(e) => setSourceLanguage(e.target.value)}
+                                    className="bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 disabled:opacity-50"
+                                    disabled={isRecording || isPlayingAudio}
+                                >
+                                    {SUPPORTED_LANGUAGES.map(lang => (
+                                        <option key={lang.code} value={lang.name}>{lang.name}</option>
+                                    ))}
+                                </select>
+                            </div>
                              <button
                                 onClick={isRecording ? handleStopRecording : handleStartRecording}
                                 className={`p-3 rounded-full transition-all duration-300 ease-in-out ${isRecording ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse' : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
@@ -262,7 +361,7 @@ const App: React.FC = () => {
                              <textarea
                                 value={inputText}
                                 onChange={(e) => setInputText(e.target.value)}
-                                placeholder="এখানে টাইপ করুন অথবা রেকর্ড করতে মাইক বাটনে ক্লিক করুন..."
+                                placeholder="Type or record audio..."
                                 className="w-full h-full min-h-[200px] bg-transparent text-gray-800 dark:text-gray-200 border-none focus:ring-0 resize-none text-lg p-2 rounded-md"
                                 disabled={isRecording}
                             />
@@ -272,28 +371,69 @@ const App: React.FC = () => {
 
                     {/* Output Card */}
                      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg flex flex-col">
-                        <div className="p-4 sm:p-6 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center gap-4">
-                            <div className="flex items-center gap-2">
-                                <label htmlFor="language-select" className="text-sm font-medium text-gray-700 dark:text-gray-300 shrink-0">Translate to:</label>
-                                <select
-                                    id="language-select"
-                                    value={targetLanguage}
-                                    onChange={(e) => setTargetLanguage(e.target.value)}
-                                    className="bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"
-                                >
-                                    {SUPPORTED_LANGUAGES.map(lang => (
-                                        <option key={lang.code} value={lang.name}>{lang.name}</option>
-                                    ))}
-                                </select>
+                        <div className="p-4 sm:p-6 border-b border-gray-200 dark:border-gray-700 flex flex-wrap justify-between items-center gap-4">
+                            <div className="flex items-center gap-x-4 gap-y-2">
+                                <div className="flex items-center gap-2">
+                                  <label htmlFor="language-select" className="text-sm font-medium text-gray-700 dark:text-gray-300 shrink-0">Translate to:</label>
+                                  <select
+                                      id="language-select"
+                                      value={targetLanguage}
+                                      onChange={(e) => setTargetLanguage(e.target.value)}
+                                      className="bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 disabled:opacity-50"
+                                      disabled={isPlayingAudio || isRecording}
+                                  >
+                                      {SUPPORTED_LANGUAGES.map(lang => (
+                                          <option key={lang.code} value={lang.name}>{lang.name}</option>
+                                      ))}
+                                  </select>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <label htmlFor="voice-select" className="text-sm font-medium text-gray-700 dark:text-gray-300 shrink-0">Voice:</label>
+                                    <select
+                                        id="voice-select"
+                                        value={selectedVoice}
+                                        onChange={(e) => setSelectedVoice(e.target.value)}
+                                        className="bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 disabled:opacity-50"
+                                        disabled={!outputAudio || isPlayingAudio || isRecording || isLoading}
+                                    >
+                                        {SUPPORTED_VOICES.map(voice => (
+                                            <option key={voice.code} value={voice.code}>{voice.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <span className={`text-sm text-blue-600 dark:text-blue-400 transition-opacity duration-300 ${isCopied ? 'opacity-100' : 'opacity-0'}`}>Copied!</span>
-                                <button onClick={handleCopy} disabled={!outputText || isLoading} className="p-3 rounded-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors" aria-label="Copy translation">
-                                    <CopyIcon className="h-6 w-6" />
+                             <div className="flex flex-wrap justify-end items-center gap-x-4 gap-y-2">
+                                <button onClick={handleDownloadAudio} disabled={!outputAudio || isLoading || isPlayingAudio} className="p-3 rounded-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors" aria-label="Download translation audio">
+                                    <DownloadIcon className="h-6 w-6" />
                                 </button>
-                                <button onClick={handlePlayAudio} disabled={!outputAudio || isLoading} className="p-3 rounded-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors" aria-label="Play translation audio">
-                                    <SpeakerIcon className="h-6 w-6" />
-                                </button>
+                                <div className="flex items-center gap-2">
+                                    <span className={`text-sm text-blue-600 dark:text-blue-400 transition-opacity duration-300 ${isCopied ? 'opacity-100' : 'opacity-0'}`}>Copied!</span>
+                                    <button onClick={handleCopy} disabled={!outputText || isLoading || isPlayingAudio} className="p-3 rounded-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors" aria-label="Copy translation">
+                                        <CopyIcon className="h-6 w-6" />
+                                    </button>
+                                </div>
+                                
+                                <div className="flex items-center gap-2">
+                                    <button onClick={handlePlayAudio} disabled={!outputAudio || isLoading || isPlayingAudio} className="p-3 rounded-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors" aria-label="Play translation audio">
+                                        <SpeakerIcon className={`h-6 w-6 transition-colors ${isPlayingAudio ? 'text-blue-500 dark:text-blue-400' : ''}`} />
+                                    </button>
+                                    <div className="flex items-center gap-1">
+                                        <label htmlFor="playback-speed" className="sr-only">Playback Speed</label>
+                                        <input
+                                            id="playback-speed"
+                                            type="range"
+                                            min="0.5"
+                                            max="1.5"
+                                            step="0.1"
+                                            value={playbackRate}
+                                            onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
+                                            className="w-24 h-2 bg-gray-300 dark:bg-gray-600 rounded-lg appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                            disabled={!outputAudio || isLoading || isPlayingAudio}
+                                            aria-label="Playback speed control"
+                                        />
+                                        <span className="text-sm font-mono w-10 text-center text-gray-600 dark:text-gray-400">{playbackRate.toFixed(1)}x</span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div className="p-4 sm:p-6 flex-grow relative overflow-y-auto">
