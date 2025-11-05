@@ -1,0 +1,7 @@
+{
+  "name": "Bangla Language Bridge",
+  "description": "Translate Bengali text and voice into various languages with audio playback, powered by Gemini.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
