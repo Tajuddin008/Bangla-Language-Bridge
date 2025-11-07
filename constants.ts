@@ -44,14 +44,17 @@ export const SUPPORTED_LANGUAGES: Language[] = [
   { name: 'Vietnamese', code: 'vi' },
 ].sort((a, b) => a.name.localeCompare(b.name));
 
-export const SUPPORTED_VOICES: Voice[] = [
+export const SUPPORTED_VOICES: (Voice & { premium?: boolean })[] = [
     { name: 'Aura (Female)', code: 'Kore' },
     { name: 'Echo (Male)', code: 'Puck' },
     { name: 'Nova (Friendly Male)', code: 'Zephyr' },
-    { name: 'Deepwave (Deep Male)', code: 'Charon' },
-    { name: 'Storm (Energetic Male)', code: 'Fenrir' },
+    { name: 'Deepwave (Deep Male)', code: 'Charon', premium: true },
+    { name: 'Storm (Energetic Male)', code: 'Fenrir', premium: true },
 ];
 
 export const DEFAULT_VOICE = 'Kore';
 export const DEFAULT_SOURCE_LANGUAGE = 'Bengali';
 export const DEFAULT_TARGET_LANGUAGE = 'English';
+
+export const FREE_TRANSLATION_LIMIT = 5;
+export const PREMIUM_TRANSLATION_LIMIT = 50;
