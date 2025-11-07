@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { transcribeAudio, translateText, textToSpeech, getPhoneticTranscription } from './services/geminiService';
 import { SUPPORTED_LANGUAGES, SUPPORTED_VOICES, DEFAULT_TARGET_LANGUAGE, DEFAULT_SOURCE_LANGUAGE, DEFAULT_VOICE } from './constants';
-import { decode, pcmToWavBlob, pcmToMp3Blob } from './utils';
+import { decode, pcmToWavBlob } from './utils';
 import { MicrophoneIcon, StopIcon, SpeakerIcon, CopyIcon, ClearIcon, DownloadIcon } from './components/icons';
 
 const App: React.FC = () => {
@@ -272,15 +272,15 @@ const App: React.FC = () => {
         if (!outputAudio) return;
         try {
             const audioData = decode(outputAudio);
-            const mp3Blob = pcmToMp3Blob(audioData, 24000, 1);
+            const wavBlob = pcmToWavBlob(audioData, 24000, 1, 16);
             
-            const url = URL.createObjectURL(mp3Blob);
+            const url = URL.createObjectURL(wavBlob);
             const a = document.createElement('a');
             a.style.display = 'none';
             a.href = url;
             
             const safeTargetLanguage = targetLanguage.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-            a.download = `translation_${safeTargetLanguage}.mp3`;
+            a.download = `translation_${safeTargetLanguage}.wav`;
             
             document.body.appendChild(a);
             a.click();

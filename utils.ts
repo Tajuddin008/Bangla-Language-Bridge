@@ -1,5 +1,3 @@
-import * as lamejs from 'lamejs';
-
 // Base64 encoding for browser
 export const blobToBase64 = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -96,33 +94,4 @@ export const pcmToWavBlob = (pcmData: Uint8Array, sampleRate: number, numChannel
     }
 
     return new Blob([view], { type: 'audio/wav' });
-};
-
-/**
- * Encodes raw PCM audio data into an MP3 file Blob using lamejs.
- * @param pcmData The raw PCM data (as a Uint8Array, expected to be 16-bit).
- * @param sampleRate The sample rate of the audio (e.g., 24000).
- * @param numChannels The number of audio channels (e.g., 1 for mono).
- * @returns A Blob representing the MP3 file.
- */
-export const pcmToMp3Blob = (pcmData: Uint8Array, sampleRate: number, numChannels: number): Blob => {
-    const dataInt16 = new Int16Array(pcmData.buffer);
-    
-    const encoder = new lamejs.Mp3Encoder(numChannels, sampleRate, 128); // 128 kbps bitrate
-    const mp3Data: Int8Array[] = [];
-
-    const sampleBlockSize = 1152; // Fixed block size for MP3 encoding
-    for (let i = 0; i < dataInt16.length; i += sampleBlockSize) {
-        const sampleChunk = dataInt16.subarray(i, i + sampleBlockSize);
-        const mp3buf = encoder.encodeBuffer(sampleChunk);
-        if (mp3buf.length > 0) {
-            mp3Data.push(mp3buf);
-        }
-    }
-    const mp3buf = encoder.flush();
-    if (mp3buf.length > 0) {
-        mp3Data.push(mp3buf);
-    }
-
-    return new Blob(mp3Data, { type: 'audio/mp3' });
 };
